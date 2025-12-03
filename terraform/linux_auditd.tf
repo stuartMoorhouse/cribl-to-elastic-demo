@@ -34,9 +34,9 @@ resource "aws_instance" "linux_auditd" {
               apt-get update -qq
               apt-get upgrade -y -qq
 
-              # Install auditd and rsyslog
-              echo "[3/6] Installing auditd and rsyslog..."
-              apt-get install -y -qq auditd audispd-plugins rsyslog
+              # Install auditd, rsyslog, and netcat
+              echo "[3/6] Installing auditd, rsyslog, and netcat..."
+              apt-get install -y -qq auditd audispd-plugins rsyslog netcat-openbsd
 
               # Configure audit rules
               echo "[4/6] Configuring audit rules..."
@@ -95,6 +95,17 @@ resource "aws_instance" "linux_auditd" {
               # Forward to Cribl
               local6.* @@$CRIBL_IP:9514
               RSYSLOGCONF
+
+              # Wait for Cribl to be ready on port 9514
+              echo "Waiting for Cribl to be available on port 9514..."
+              for i in {1..30}; do
+                if nc -z $CRIBL_IP 9514 2>/dev/null; then
+                  echo "Cribl port 9514 is available!"
+                  break
+                fi
+                echo "Waiting for Cribl... ($i/30)"
+                sleep 10
+              done
 
               # Restart rsyslog
               systemctl restart rsyslog

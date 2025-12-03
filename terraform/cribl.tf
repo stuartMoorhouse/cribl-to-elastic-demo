@@ -101,7 +101,48 @@ resource "aws_instance" "cribl" {
               systemctl start cribl
 
               # Wait for Cribl to start
+              echo "Waiting for Cribl to start..."
+              sleep 20
+
+              # Configure Syslog source via local config file
+              echo "Configuring Cribl Syslog source..."
+              cat > /opt/cribl/local/cribl/inputs.yml << 'INPUTSYML'
+inputs:
+  syslog:
+    disabled: false
+    type: syslog
+    host: "0.0.0.0"
+    tcpPort: 9514
+    udpPort: 9514
+    sendToRoutes: true
+    tls:
+      disabled: true
+    enableProxyHeader: false
+    maxActiveCxn: 1000
+    timestampTimezone: local
+INPUTSYML
+
+              chown cribl:cribl /opt/cribl/local/cribl/inputs.yml
+              echo "Syslog source configured on port 9514 (TCP and UDP)"
+
+              # Restart Cribl to pick up the new config
+              echo "Restarting Cribl to apply configuration..."
+              systemctl restart cribl
+
+              # Wait for restart and verify port is listening
               sleep 15
+              for i in {1..10}; do
+                if ss -tlnup | grep -q ":9514"; then
+                  echo "Cribl syslog port 9514 is now listening"
+                  break
+                fi
+                echo "Waiting for syslog port... ($i/10)"
+                sleep 3
+              done
+
+              # Start Fortinet simulator now that Cribl is configured
+              echo "Starting Fortinet simulator..."
+              systemctl start fortinet-simulator
 
               # Install Fortinet log simulator
               echo "[7/7] Installing Fortinet log simulator..."
@@ -268,8 +309,7 @@ resource "aws_instance" "cribl" {
 
               systemctl daemon-reload
               systemctl enable fortinet-simulator
-              # Don't start yet - wait for Cribl to be configured with syslog source
-              # systemctl start fortinet-simulator
+              # Note: fortinet-simulator is started above after Cribl syslog source is configured
 
               # Get IP addresses
               PRIVATE_IP=$(hostname -I | awk '{print $1}')

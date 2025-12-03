@@ -168,11 +168,33 @@ resource "aws_instance" "windows" {
                   $nxlogConf | Out-File -FilePath $nxlogConfPath -Encoding UTF8 -Force
               }
 
-              # Start NXLog service
+              # Start NXLog service with retry logic
               Write-Host "[7/7] Starting NXLog service..."
               if (Get-Service -Name nxlog -ErrorAction SilentlyContinue) {
                   Set-Service -Name nxlog -StartupType Automatic
+
+                  # Wait for Cribl to be ready (port 9514)
+                  Write-Host "Waiting for Cribl to be available on port 9514..."
+                  $maxRetries = 30
+                  $retryCount = 0
+                  while ($retryCount -lt $maxRetries) {
+                      try {
+                          $tcp = New-Object System.Net.Sockets.TcpClient
+                          $tcp.Connect($criblIp, 9514)
+                          $tcp.Close()
+                          Write-Host "Cribl port 9514 is available!"
+                          break
+                      } catch {
+                          $retryCount++
+                          Write-Host "Waiting for Cribl... ($retryCount/$maxRetries)"
+                          Start-Sleep -Seconds 10
+                      }
+                  }
+
                   Start-Service -Name nxlog
+                  Write-Host "NXLog service started"
+              } else {
+                  Write-Host "WARNING: NXLog service not found - installation may have failed"
               }
 
               # Create demo script for generating security events
