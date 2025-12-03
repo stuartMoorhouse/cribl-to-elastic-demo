@@ -38,17 +38,6 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/id_ed25519"
 }
 
-variable "windows_admin_password" {
-  description = "Administrator password for Windows instance (min 8 chars, must include uppercase, lowercase, number, special char)"
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.windows_admin_password) >= 8
-    error_message = "Windows admin password must be at least 8 characters"
-  }
-}
-
 # Elastic Cloud Configuration
 variable "ec_region" {
   description = "Elastic Cloud region"

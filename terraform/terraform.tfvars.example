@@ -10,13 +10,12 @@ allowed_ssh_cidr = "YOUR_IP_HERE/32"
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
 ssh_private_key_path = "~/.ssh/id_ed25519"
 
-# REQUIRED: Windows Administrator password
-# Must be at least 8 characters with uppercase, lowercase, number, special char
-windows_admin_password = "YourSecureP@ssw0rd!"
-
 # Elastic Cloud Configuration
 ec_region              = "aws-eu-north-1"
 elastic_version        = "8.17.0"
 deployment_template_id = "aws-storage-optimized"
 elasticsearch_size     = "4g"
 kibana_size            = "1g"
+
+# Note: Windows Administrator password is auto-generated
+# View it with: terraform output windows_admin_password

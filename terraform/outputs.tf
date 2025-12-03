@@ -56,6 +56,18 @@ output "windows_rdp_command" {
   value       = "Connect via RDP to ${aws_instance.windows.public_ip} as Administrator"
 }
 
+output "windows_private_key" {
+  description = "Windows RSA private key (for decrypting password if needed)"
+  value       = tls_private_key.windows.private_key_pem
+  sensitive   = true
+}
+
+output "windows_admin_password" {
+  description = "Windows Administrator password"
+  value       = random_password.windows_admin.result
+  sensitive   = true
+}
+
 # Elastic Cloud Outputs
 output "elastic_deployment" {
   description = "Elastic Cloud deployment information"

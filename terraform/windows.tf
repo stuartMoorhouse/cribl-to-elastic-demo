@@ -14,11 +14,37 @@ data "aws_ami" "windows" {
   }
 }
 
+# Generate RSA key pair for Windows (ED25519 not supported)
+resource "tls_private_key" "windows" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+# Generate random password for Windows Administrator
+resource "random_password" "windows_admin" {
+  length           = 16
+  special          = true
+  override_special = "!@#$%"
+  min_lower        = 1
+  min_upper        = 1
+  min_numeric      = 1
+  min_special      = 1
+}
+
+resource "aws_key_pair" "windows" {
+  key_name   = "cribl-elastic-demo-windows-key"
+  public_key = tls_private_key.windows.public_key_openssh
+
+  tags = {
+    Name = "cribl-elastic-demo-windows-key"
+  }
+}
+
 # Windows Security Events Server
 resource "aws_instance" "windows" {
   ami                    = data.aws_ami.windows.id
   instance_type          = "t3.small"
-  key_name               = aws_key_pair.demo.key_name
+  key_name               = aws_key_pair.windows.key_name
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.windows.id]
   get_password_data      = true
@@ -40,7 +66,7 @@ resource "aws_instance" "windows" {
 
               # Set administrator password
               Write-Host "[1/7] Setting administrator password..."
-              $Password = ConvertTo-SecureString "${var.windows_admin_password}" -AsPlainText -Force
+              $Password = ConvertTo-SecureString "${random_password.windows_admin.result}" -AsPlainText -Force
               Set-LocalUser -Name "Administrator" -Password $Password
 
               # Enable WinRM
