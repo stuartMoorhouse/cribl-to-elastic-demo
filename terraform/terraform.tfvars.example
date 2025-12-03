@@ -17,5 +17,9 @@ deployment_template_id = "aws-storage-optimized"
 elasticsearch_size     = "4g"
 kibana_size            = "1g"
 
+# AWS configuration
+aws_access_key_id = AKIA34BAGDIHUPVFWRHL
+aws_secret_access_key = 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
+
 # Note: Windows Administrator password is auto-generated
 # View it with: terraform output windows_admin_password
