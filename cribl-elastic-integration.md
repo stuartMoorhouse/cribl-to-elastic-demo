@@ -195,4 +195,4 @@ For Fortinet FortiGate logs:
 
 - [Elastic Cribl Integration Documentation](https://www.elastic.co/docs/reference/integrations/cribl)
 - [Cribl Elastic Cloud Output Documentation](https://docs.cribl.io/stream/destinations-elastic-cloud/)
-- [Cribl Elasticsearch Output Documentation](https://docs.cribl.io/stream/destinations-elastic/)
+- [Cribl Elasticsearch Output Documentation](https://docs.cribl.io/stream/destinations-elastic/
