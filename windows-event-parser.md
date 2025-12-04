@@ -9,7 +9,7 @@ When Elastic Agent collects Windows events, it:
 2. Parses the XML into structured JSON fields (`winlog.*`)
 3. Maps common fields to ECS (`user.*`, `source.*`, `process.*`, etc.)
 
-This pipeline replicates that process for raw XML data arriving via Cribl.
+This pipeline replicates that process for raw XML data arriving via Cribl using **only processors available on all Elasticsearch licenses** (script, set, date, remove).
 
 ## Installation
 
@@ -19,9 +19,9 @@ Run these commands in Kibana Dev Console in order.
 
 ## Step 1: Create the XML Parser Pipeline
 
-This is the main pipeline that converts XML to Elastic Agent format:
+This pipeline uses Painless regex to parse Windows Event XML:
 
-```
+```json
 PUT _ingest/pipeline/cribl-winlog-xml-parser
 {
   "description": "Convert raw Windows Event XML to Elastic Agent format for Windows integration compatibility",
@@ -30,123 +30,153 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
       "set": {
         "description": "Preserve original message",
         "field": "event.original",
-        "value": "{{{message}}}",
+        "copy_from": "message",
         "if": "ctx.message != null"
       }
     },
     {
-      "xml": {
-        "description": "Parse XML message",
-        "field": "message",
-        "target_field": "_xml",
-        "ignore_failure": true
-      }
-    },
-    {
       "script": {
-        "description": "Extract System fields from Windows Event XML",
+        "description": "Extract System fields from Windows Event XML using regex",
         "lang": "painless",
-        "ignore_failure": true,
+        "ignore_failure": false,
         "source": """
-          if (ctx._xml?.Event?.System == null) {
-            return;
+          if (ctx.message == null) {
+            throw new Exception('No message field');
           }
           
-          def system = ctx._xml.Event.System;
-          
-          // Initialize winlog object
+          String xml = ctx.message;
           ctx.winlog = [:];
+          ctx.winlog.api = 'wineventlog';
           
-          // Basic event identification
-          ctx.winlog.channel = system.Channel;
-          ctx.winlog.event_id = system.EventID instanceof Map ? system.EventID[''] : system.EventID;
-          ctx.winlog.provider_name = system.Provider?.Name;
-          ctx.winlog.provider_guid = system.Provider?.Guid;
-          ctx.winlog.record_id = system.EventRecordID;
-          ctx.winlog.computer_name = system.Computer;
-          ctx.winlog.task = system.Task;
-          ctx.winlog.opcode = system.Opcode;
-          ctx.winlog.version = system.Version;
-          ctx.winlog.api = "wineventlog";
+          // Helper function to extract XML attribute or element
+          // Pattern: Name='value' or <n>value</n>
+          
+          // Provider Name
+          def providerMatch = /Provider Name='([^']*)'/.matcher(xml);
+          if (providerMatch.find()) {
+            ctx.winlog.provider_name = providerMatch.group(1);
+          }
+          
+          // Provider Guid
+          def guidMatch = /Guid='\{?([^}']*)\}?'/.matcher(xml);
+          if (guidMatch.find()) {
+            ctx.winlog.provider_guid = '{' + guidMatch.group(1) + '}';
+          }
+          
+          // EventID - handle both <EventID>123</EventID> and <EventID Qualifiers='0'>123</EventID>
+          def eventIdMatch = /<EventID[^>]*>(\d+)<\/EventID>/.matcher(xml);
+          if (eventIdMatch.find()) {
+            ctx.winlog.event_id = eventIdMatch.group(1);
+          }
+          
+          // Version
+          def versionMatch = /<Version>(\d+)<\/Version>/.matcher(xml);
+          if (versionMatch.find()) {
+            ctx.winlog.version = versionMatch.group(1);
+          }
+          
+          // Level
+          def levelMatch = /<Level>(\d+)<\/Level>/.matcher(xml);
+          if (levelMatch.find()) {
+            def levelNum = levelMatch.group(1);
+            def levelMap = ['0': 'Information', '1': 'Critical', '2': 'Error', '3': 'Warning', '4': 'Information', '5': 'Verbose'];
+            ctx.winlog.level = levelMap.getOrDefault(levelNum, 'Information');
+          }
+          
+          // Task
+          def taskMatch = /<Task>(\d+)<\/Task>/.matcher(xml);
+          if (taskMatch.find()) {
+            ctx.winlog.task = taskMatch.group(1);
+          }
+          
+          // Opcode
+          def opcodeMatch = /<Opcode>(\d+)<\/Opcode>/.matcher(xml);
+          if (opcodeMatch.find()) {
+            ctx.winlog.opcode = opcodeMatch.group(1);
+          }
           
           // Keywords
-          if (system.Keywords != null) {
-            ctx.winlog.keywords = [system.Keywords];
+          def keywordsMatch = /<Keywords>([^<]+)<\/Keywords>/.matcher(xml);
+          if (keywordsMatch.find()) {
+            ctx.winlog.keywords = [keywordsMatch.group(1)];
           }
           
-          // Process information
-          if (system.Execution != null) {
+          // TimeCreated
+          def timeMatch = /TimeCreated SystemTime='([^']+)'/.matcher(xml);
+          if (timeMatch.find()) {
+            ctx.winlog.time_created = timeMatch.group(1);
+          }
+          
+          // EventRecordID
+          def recordMatch = /<EventRecordID>(\d+)<\/EventRecordID>/.matcher(xml);
+          if (recordMatch.find()) {
+            ctx.winlog.record_id = recordMatch.group(1);
+          }
+          
+          // Correlation ActivityID
+          def activityMatch = /ActivityID='\{?([^}']+)\}?'/.matcher(xml);
+          if (activityMatch.find()) {
+            ctx.winlog.activity_id = '{' + activityMatch.group(1) + '}';
+          }
+          
+          // Execution ProcessID and ThreadID
+          def execMatch = /Execution ProcessID='(\d+)' ThreadID='(\d+)'/.matcher(xml);
+          if (execMatch.find()) {
             ctx.winlog.process = [:];
-            if (system.Execution.ProcessID != null) {
-              try {
-                ctx.winlog.process.pid = Integer.parseInt(system.Execution.ProcessID.toString());
-              } catch (Exception e) {
-                ctx.winlog.process.pid = system.Execution.ProcessID;
-              }
-            }
-            if (system.Execution.ThreadID != null) {
-              ctx.winlog.process.thread = [:];
-              try {
-                ctx.winlog.process.thread.id = Integer.parseInt(system.Execution.ThreadID.toString());
-              } catch (Exception e) {
-                ctx.winlog.process.thread.id = system.Execution.ThreadID;
-              }
-            }
+            ctx.winlog.process.pid = Integer.parseInt(execMatch.group(1));
+            ctx.winlog.process.thread = [:];
+            ctx.winlog.process.thread.id = Integer.parseInt(execMatch.group(2));
           }
           
-          // Activity ID / Correlation
-          if (system.Correlation != null && system.Correlation.ActivityID != null) {
-            ctx.winlog.activity_id = system.Correlation.ActivityID;
+          // Channel
+          def channelMatch = /<Channel>([^<]+)<\/Channel>/.matcher(xml);
+          if (channelMatch.find()) {
+            ctx.winlog.channel = channelMatch.group(1);
           }
           
-          // Level mapping
-          if (system.Level != null) {
-            def levelMap = [
-              '0': 'Information',
-              '1': 'Critical',
-              '2': 'Error',
-              '3': 'Warning',
-              '4': 'Information',
-              '5': 'Verbose'
-            ];
-            ctx.winlog.level = levelMap.getOrDefault(system.Level.toString(), 'Information');
+          // Computer
+          def computerMatch = /<Computer>([^<]+)<\/Computer>/.matcher(xml);
+          if (computerMatch.find()) {
+            ctx.winlog.computer_name = computerMatch.group(1);
           }
           
-          // Time created
-          if (system.TimeCreated?.SystemTime != null) {
-            ctx.winlog.time_created = system.TimeCreated.SystemTime;
+          // Security UserID
+          def securityMatch = /Security UserID='([^']+)'/.matcher(xml);
+          if (securityMatch.find()) {
+            ctx.winlog.user = [:];
+            ctx.winlog.user.identifier = securityMatch.group(1);
           }
         """
       }
     },
     {
       "script": {
-        "description": "Extract EventData fields",
+        "description": "Extract EventData fields using regex",
         "lang": "painless",
         "ignore_failure": true,
         "source": """
-          if (ctx._xml?.Event?.EventData?.Data == null) {
+          if (ctx.message == null) {
             return;
           }
           
+          String xml = ctx.message;
           ctx.winlog.event_data = [:];
-          def data = ctx._xml.Event.EventData.Data;
           
-          if (data instanceof List) {
-            for (item in data) {
-              if (item instanceof Map && item.Name != null) {
-                def value = item[''];
-                if (value != null && value != '') {
-                  ctx.winlog.event_data[item.Name] = value;
-                }
-              }
-            }
-          } else if (data instanceof Map && data.Name != null) {
-            def value = data[''];
-            if (value != null && value != '') {
-              ctx.winlog.event_data[data.Name] = value;
+          // Match all <Data Name='X'>Y</Data> patterns
+          // Using a loop to find all matches
+          def pattern = /<Data Name='([^']+)'>([^<]*)<\/Data>/;
+          def matcher = pattern.matcher(xml);
+          
+          while (matcher.find()) {
+            def name = matcher.group(1);
+            def value = matcher.group(2);
+            if (value != null && value.length() > 0) {
+              ctx.winlog.event_data[name] = value;
             }
           }
+          
+          // Also check for empty Data elements (self-closing or empty)
+          // <Data Name='X'/> or <Data Name='X'></Data>
         """
       }
     },
@@ -156,22 +186,30 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
         "lang": "painless",
         "ignore_failure": true,
         "source": """
-          if (ctx._xml?.Event?.UserData == null || ctx.winlog?.event_data != null) {
+          if (ctx.message == null || (ctx.winlog?.event_data != null && ctx.winlog.event_data.size() > 0)) {
+            return;
+          }
+          
+          String xml = ctx.message;
+          
+          // Check if there's a UserData section
+          if (!xml.contains('<UserData>')) {
             return;
           }
           
           ctx.winlog.user_data = [:];
           
-          def userData = ctx._xml.Event.UserData;
+          // Extract UserData content - generic pattern for nested elements
+          // This handles structures like <UserData><EventXML><Field>Value</Field></EventXML></UserData>
+          def pattern = /<([A-Za-z][A-Za-z0-9_]*)>([^<]+)<\/\1>/;
+          def matcher = pattern.matcher(xml);
           
-          // UserData can have various nested structures
-          for (entry in userData.entrySet()) {
-            if (entry.getValue() instanceof Map) {
-              for (subEntry in entry.getValue().entrySet()) {
-                if (subEntry.getValue() != null) {
-                  ctx.winlog.user_data[subEntry.getKey()] = subEntry.getValue().toString();
-                }
-              }
+          while (matcher.find()) {
+            def name = matcher.group(1);
+            def value = matcher.group(2);
+            // Skip known container elements
+            if (name != 'UserData' && name != 'EventData' && name != 'System' && name != 'Event' && value != null && value.trim().length() > 0) {
+              ctx.winlog.user_data[name] = value.trim();
             }
           }
         """
@@ -254,7 +292,7 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
             ctx.user.domain = ed.TargetDomainName;
             
             // Build related.user array
-            def relatedUsers = [];
+            def relatedUsers = new ArrayList();
             relatedUsers.add(ed.TargetUserName);
             if (ed.SubjectUserName != null && ed.SubjectUserName != '-' && ed.SubjectUserName != '') {
               relatedUsers.add(ed.SubjectUserName);
@@ -264,13 +302,15 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
             ctx.user.name = ed.SubjectUserName;
             ctx.user.id = ed.SubjectUserSid;
             ctx.user.domain = ed.SubjectDomainName;
-            ctx.related.user = [ed.SubjectUserName];
+            def relatedUsers = new ArrayList();
+            relatedUsers.add(ed.SubjectUserName);
+            ctx.related.user = relatedUsers;
           }
           
           // Source IP (for network logons)
           if (ed.IpAddress != null && ed.IpAddress != '-' && ed.IpAddress != '') {
             ctx.source.ip = ed.IpAddress;
-            if (ctx.related.ip == null) ctx.related.ip = [];
+            if (ctx.related.ip == null) ctx.related.ip = new ArrayList();
             ctx.related.ip.add(ed.IpAddress);
           }
           
@@ -329,211 +369,115 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
         "lang": "painless",
         "ignore_failure": true,
         "source": """
-          if (ctx.winlog?.event_id == null || ctx.winlog?.channel != 'Security') {
+          if (ctx.winlog?.event_id == null) {
             return;
           }
           
           def eventId = ctx.winlog.event_id.toString();
+          def channel = ctx.winlog?.channel;
           
           // Initialize event object
           if (ctx.event == null) ctx.event = [:];
           
-          // Event action and outcome mappings
-          def actionMap = [
-            // Logon events
-            '4624': 'logged-in',
-            '4625': 'logon-failed',
-            '4634': 'logged-off',
-            '4647': 'logged-off',
-            '4648': 'explicit-credential-logon',
-            '4672': 'assigned-special-privileges',
-            '4768': 'kerberos-authentication-ticket-requested',
-            '4769': 'kerberos-service-ticket-requested',
-            '4770': 'kerberos-service-ticket-renewed',
-            '4771': 'kerberos-preauth-failed',
-            '4776': 'credential-validated',
+          // Security channel events
+          if (channel == 'Security') {
+            // Event action mappings
+            def actionMap = [
+              '4624': 'logged-in',
+              '4625': 'logon-failed',
+              '4634': 'logged-off',
+              '4647': 'logged-off',
+              '4648': 'explicit-credential-logon',
+              '4672': 'assigned-special-privileges',
+              '4768': 'kerberos-authentication-ticket-requested',
+              '4769': 'kerberos-service-ticket-requested',
+              '4770': 'kerberos-service-ticket-renewed',
+              '4771': 'kerberos-preauth-failed',
+              '4776': 'credential-validated',
+              '4720': 'created-user-account',
+              '4722': 'enabled-user-account',
+              '4723': 'change-password-attempt',
+              '4724': 'reset-password-attempt',
+              '4725': 'disabled-user-account',
+              '4726': 'deleted-user-account',
+              '4727': 'created-security-group',
+              '4728': 'added-member-to-security-group',
+              '4729': 'removed-member-from-security-group',
+              '4730': 'deleted-security-group',
+              '4731': 'created-security-group',
+              '4732': 'added-member-to-security-group',
+              '4733': 'removed-member-from-security-group',
+              '4734': 'deleted-security-group',
+              '4735': 'modified-security-group',
+              '4737': 'modified-security-group',
+              '4738': 'modified-user-account',
+              '4740': 'locked-out-user-account',
+              '4741': 'created-computer-account',
+              '4742': 'modified-computer-account',
+              '4743': 'deleted-computer-account',
+              '4754': 'created-security-group',
+              '4755': 'modified-security-group',
+              '4756': 'added-member-to-security-group',
+              '4757': 'removed-member-from-security-group',
+              '4758': 'deleted-security-group',
+              '4688': 'created-process',
+              '4689': 'terminated-process',
+              '4656': 'requested-handle-to-object',
+              '4658': 'closed-handle-to-object',
+              '4660': 'deleted-object',
+              '4661': 'requested-handle-to-object',
+              '4662': 'operation-performed-on-object',
+              '4663': 'attempted-to-access-object',
+              '4670': 'changed-permissions-on-object',
+              '4719': 'changed-audit-policy',
+              '4739': 'changed-domain-policy',
+              '4817': 'changed-auditing-settings',
+              '4697': 'service-installed',
+              '4698': 'scheduled-task-created',
+              '4699': 'scheduled-task-deleted',
+              '4700': 'scheduled-task-enabled',
+              '4701': 'scheduled-task-disabled',
+              '4702': 'scheduled-task-updated'
+            ];
             
-            // Account management
-            '4720': 'created-user-account',
-            '4722': 'enabled-user-account',
-            '4723': 'change-password-attempt',
-            '4724': 'reset-password-attempt',
-            '4725': 'disabled-user-account',
-            '4726': 'deleted-user-account',
-            '4727': 'created-security-group',
-            '4728': 'added-member-to-security-group',
-            '4729': 'removed-member-from-security-group',
-            '4730': 'deleted-security-group',
-            '4731': 'created-security-group',
-            '4732': 'added-member-to-security-group',
-            '4733': 'removed-member-from-security-group',
-            '4734': 'deleted-security-group',
-            '4735': 'modified-security-group',
-            '4737': 'modified-security-group',
-            '4738': 'modified-user-account',
-            '4740': 'locked-out-user-account',
-            '4741': 'created-computer-account',
-            '4742': 'modified-computer-account',
-            '4743': 'deleted-computer-account',
-            '4754': 'created-security-group',
-            '4755': 'modified-security-group',
-            '4756': 'added-member-to-security-group',
-            '4757': 'removed-member-from-security-group',
-            '4758': 'deleted-security-group',
+            if (actionMap.containsKey(eventId)) {
+              ctx.event.action = actionMap.get(eventId);
+            }
             
-            // Process events
-            '4688': 'created-process',
-            '4689': 'terminated-process',
+            // Failure events
+            def failureEvents = ['4625', '4771', '4772', '4773', '4774', '4775'];
             
-            // Object access
-            '4656': 'requested-handle-to-object',
-            '4658': 'closed-handle-to-object',
-            '4660': 'deleted-object',
-            '4661': 'requested-handle-to-object',
-            '4662': 'operation-performed-on-object',
-            '4663': 'attempted-to-access-object',
-            '4670': 'changed-permissions-on-object',
+            if (failureEvents.contains(eventId)) {
+              ctx.event.outcome = 'failure';
+            } else if (actionMap.containsKey(eventId)) {
+              ctx.event.outcome = 'success';
+            }
             
-            // Policy changes
-            '4719': 'changed-audit-policy',
-            '4739': 'changed-domain-policy',
-            '4817': 'changed-auditing-settings',
+            // Event category mappings
+            def authEvents = ['4624', '4625', '4634', '4647', '4648', '4672', '4768', '4769', '4770', '4771', '4776'];
+            def iamEvents = ['4720', '4722', '4723', '4724', '4725', '4726', '4727', '4728', '4729', '4730', '4731', '4732', '4733', '4734', '4735', '4737', '4738', '4740', '4741', '4742', '4743', '4754', '4755', '4756', '4757', '4758'];
+            def processEvents = ['4688', '4689'];
+            def configEvents = ['4697', '4698', '4699', '4700', '4701', '4702'];
             
-            // Service events
-            '4697': 'service-installed',
+            if (authEvents.contains(eventId)) {
+              ctx.event.category = ['authentication'];
+            } else if (iamEvents.contains(eventId)) {
+              ctx.event.category = ['iam'];
+            } else if (processEvents.contains(eventId)) {
+              ctx.event.category = ['process'];
+            } else if (configEvents.contains(eventId)) {
+              ctx.event.category = ['configuration'];
+            }
             
-            // Scheduled tasks
-            '4698': 'scheduled-task-created',
-            '4699': 'scheduled-task-deleted',
-            '4700': 'scheduled-task-enabled',
-            '4701': 'scheduled-task-disabled',
-            '4702': 'scheduled-task-updated'
-          ];
-          
-          // Success events
-          def successEvents = ['4624', '4634', '4647', '4648', '4672', '4720', '4722', '4724', '4725', '4726', 
-                               '4727', '4728', '4729', '4730', '4731', '4732', '4733', '4734', '4735', '4737',
-                               '4738', '4740', '4741', '4742', '4743', '4754', '4755', '4756', '4757', '4758',
-                               '4688', '4689', '4656', '4658', '4660', '4661', '4662', '4663', '4670', '4697',
-                               '4698', '4699', '4700', '4701', '4702', '4768', '4769', '4770', '4776'];
-          
-          // Failure events
-          def failureEvents = ['4625', '4771'];
-          
-          if (actionMap.containsKey(eventId)) {
-            ctx.event.action = actionMap.get(eventId);
-          }
-          
-          if (successEvents.contains(eventId)) {
-            ctx.event.outcome = 'success';
-          } else if (failureEvents.contains(eventId)) {
-            ctx.event.outcome = 'failure';
-          }
-          
-          // Event category mappings
-          def categoryMap = [
-            '4624': ['authentication'],
-            '4625': ['authentication'],
-            '4634': ['authentication'],
-            '4647': ['authentication'],
-            '4648': ['authentication'],
-            '4672': ['authentication'],
-            '4768': ['authentication'],
-            '4769': ['authentication'],
-            '4770': ['authentication'],
-            '4771': ['authentication'],
-            '4776': ['authentication'],
-            '4720': ['iam'],
-            '4722': ['iam'],
-            '4723': ['iam'],
-            '4724': ['iam'],
-            '4725': ['iam'],
-            '4726': ['iam'],
-            '4738': ['iam'],
-            '4740': ['iam'],
-            '4741': ['iam'],
-            '4742': ['iam'],
-            '4743': ['iam'],
-            '4727': ['iam'],
-            '4728': ['iam'],
-            '4729': ['iam'],
-            '4730': ['iam'],
-            '4731': ['iam'],
-            '4732': ['iam'],
-            '4733': ['iam'],
-            '4734': ['iam'],
-            '4735': ['iam'],
-            '4737': ['iam'],
-            '4754': ['iam'],
-            '4755': ['iam'],
-            '4756': ['iam'],
-            '4757': ['iam'],
-            '4758': ['iam'],
-            '4688': ['process'],
-            '4689': ['process'],
-            '4697': ['configuration'],
-            '4698': ['configuration'],
-            '4699': ['configuration'],
-            '4700': ['configuration'],
-            '4701': ['configuration'],
-            '4702': ['configuration']
-          ];
-          
-          if (categoryMap.containsKey(eventId)) {
-            ctx.event.category = categoryMap.get(eventId);
-          }
-          
-          // Event type mappings  
-          def typeMap = [
-            '4624': ['start'],
-            '4625': ['start'],
-            '4634': ['end'],
-            '4647': ['end'],
-            '4648': ['start'],
-            '4672': ['info'],
-            '4768': ['start'],
-            '4769': ['start'],
-            '4770': ['start'],
-            '4771': ['start'],
-            '4776': ['info'],
-            '4720': ['creation', 'user'],
-            '4722': ['change', 'user'],
-            '4723': ['change', 'user'],
-            '4724': ['change', 'user'],
-            '4725': ['change', 'user'],
-            '4726': ['deletion', 'user'],
-            '4738': ['change', 'user'],
-            '4740': ['change', 'user'],
-            '4741': ['creation'],
-            '4742': ['change'],
-            '4743': ['deletion'],
-            '4727': ['creation', 'group'],
-            '4728': ['change', 'group'],
-            '4729': ['change', 'group'],
-            '4730': ['deletion', 'group'],
-            '4731': ['creation', 'group'],
-            '4732': ['change', 'group'],
-            '4733': ['change', 'group'],
-            '4734': ['deletion', 'group'],
-            '4735': ['change', 'group'],
-            '4737': ['change', 'group'],
-            '4754': ['creation', 'group'],
-            '4755': ['change', 'group'],
-            '4756': ['change', 'group'],
-            '4757': ['change', 'group'],
-            '4758': ['deletion', 'group'],
-            '4688': ['start'],
-            '4689': ['end'],
-            '4697': ['creation'],
-            '4698': ['creation'],
-            '4699': ['deletion'],
-            '4700': ['change'],
-            '4701': ['change'],
-            '4702': ['change']
-          ];
-          
-          if (typeMap.containsKey(eventId)) {
-            ctx.event.type = typeMap.get(eventId);
+            // Event type mappings
+            def startEvents = ['4624', '4625', '4648', '4768', '4769', '4770', '4771', '4688'];
+            def endEvents = ['4634', '4647', '4689'];
+            
+            if (startEvents.contains(eventId)) {
+              ctx.event.type = ['start'];
+            } else if (endEvents.contains(eventId)) {
+              ctx.event.type = ['end'];
+            }
           }
         """
       }
@@ -566,9 +510,9 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
           def logonType = ctx.winlog.event_data.LogonType.toString();
           
           if (ctx.winlog.logon == null) ctx.winlog.logon = [:];
-          ctx.winlog.logon.type = logonTypeMap.getOrDefault(logonType, 'Unknown');
+          ctx.winlog.logon.type = logonTypeMap.getOrDefault(logonType, 'Unknown (' + logonType + ')');
           
-          // Also set as string in logon.id
+          // Also set logon.id
           if (ctx.winlog.event_data.TargetLogonId != null) {
             ctx.winlog.logon.id = ctx.winlog.event_data.TargetLogonId;
           }
@@ -587,7 +531,6 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
           
           if (ctx.event == null) ctx.event = [:];
           ctx.event.module = 'sysmon';
-          ctx.event.category = ['process'];
           
           def eventId = ctx.winlog?.event_id?.toString();
           
@@ -618,11 +561,64 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
             '23': 'File Delete archived',
             '24': 'Clipboard changed',
             '25': 'Process tampering',
-            '26': 'File Delete logged'
+            '26': 'File Delete logged',
+            '27': 'File Block Executable',
+            '28': 'File Block Shredding',
+            '29': 'File Executable Detected'
           ];
           
           if (sysmonActions.containsKey(eventId)) {
             ctx.event.action = sysmonActions.get(eventId);
+          }
+          
+          // Set categories based on event type
+          def processEvents = ['1', '5', '6', '7', '8', '10', '25'];
+          def networkEvents = ['3', '22'];
+          def fileEvents = ['2', '11', '15', '23', '26', '27', '28', '29'];
+          def registryEvents = ['12', '13', '14'];
+          
+          if (processEvents.contains(eventId)) {
+            ctx.event.category = ['process'];
+          } else if (networkEvents.contains(eventId)) {
+            ctx.event.category = ['network'];
+          } else if (fileEvents.contains(eventId)) {
+            ctx.event.category = ['file'];
+          } else if (registryEvents.contains(eventId)) {
+            ctx.event.category = ['registry'];
+          }
+        """
+      }
+    },
+    {
+      "script": {
+        "description": "Handle PowerShell events",
+        "lang": "painless",
+        "ignore_failure": true,
+        "source": """
+          def channel = ctx.winlog?.channel;
+          if (channel == null || !channel.contains('PowerShell')) {
+            return;
+          }
+          
+          if (ctx.event == null) ctx.event = [:];
+          ctx.event.module = 'powershell';
+          ctx.event.category = ['process'];
+          
+          def eventId = ctx.winlog?.event_id?.toString();
+          
+          def powershellActions = [
+            '400': 'Engine Started',
+            '403': 'Engine Stopped',
+            '600': 'Provider Started',
+            '800': 'Pipeline Execution Details',
+            '4103': 'Module Logging',
+            '4104': 'Script Block Logging',
+            '4105': 'Script Block Invocation Start',
+            '4106': 'Script Block Invocation End'
+          ];
+          
+          if (powershellActions.containsKey(eventId)) {
+            ctx.event.action = powershellActions.get(eventId);
           }
         """
       }
@@ -630,7 +626,7 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
     {
       "remove": {
         "description": "Clean up temporary fields",
-        "field": ["_xml", "_dataId", "winlog.time_created"],
+        "field": ["_dataId", "winlog.time_created"],
         "ignore_failure": true,
         "ignore_missing": true
       }
@@ -640,7 +636,13 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
     {
       "set": {
         "field": "error.message",
-        "value": "Processor {{ _ingest.on_failure_processor_type }} with tag {{ _ingest.on_failure_processor_tag }} failed: {{ _ingest.on_failure_message }}"
+        "value": "Pipeline failed at processor [{{ _ingest.on_failure_processor_type }}]: {{ _ingest.on_failure_message }}"
+      }
+    },
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "pipeline_error"
       }
     }
   ]
@@ -649,11 +651,11 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
 
 ---
 
-## Step 2: Update the Cribl Routing Pipeline
+## Step 2: Create the Cribl Routing Pipeline
 
-Update the `logs-cribl-default@custom` pipeline to use the parser before routing:
+This routes incoming Cribl data through the parser and to the correct data streams:
 
-```
+```json
 PUT _ingest/pipeline/logs-cribl-default@custom
 {
   "description": "Parse and route Cribl data to appropriate data streams",
@@ -711,55 +713,28 @@ PUT _ingest/pipeline/logs-cribl-default@custom
 
 ---
 
-## Step 3: Ensure Required Integrations Are Installed
+## Step 3: Testing
 
-For the routing to work, you need to install the integration assets in Kibana:
+### Test with Your Sample Event (4662)
 
-1. Go to **Management → Integrations**
-2. Search for and install:
-   - **System** integration (for Security, Application, System logs)
-   - **Windows** integration (for Sysmon, PowerShell logs)
-3. For each, go to **Settings → Install assets**
-
----
-
-## Step 4: Configure Cribl
-
-### Destination Settings
-
-| Setting | Value |
-|---------|-------|
-| **Index or Data Stream** | `logs-cribl-default` |
-| **API Key** | Base64-encoded Elastic API key |
-
-### API Key Permissions
-
-```
+```json
+POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 {
-  "indices": [
+  "docs": [
     {
-      "names": ["logs-*"],
-      "privileges": ["auto_configure", "create_doc", "write"]
+      "_source": {
+        "@timestamp": "2025-12-04T09:23:56.834Z",
+        "_dataId": "winlog",
+        "message": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Security-Auditing' Guid='{54849625-5478-4994-A5BA-3E3B0328C30D}'/><EventID>4662</EventID><Version>0</Version><Level>0</Level><Task>14080</Task><Opcode>0</Opcode><Keywords>0x8020000000000000</Keywords><TimeCreated SystemTime='2025-12-04T09:23:56.8347053Z'/><EventRecordID>25912222</EventRecordID><Correlation ActivityID='{96DCEF1A-40CF-0002-02F0-DC96CF40DB01}'/><Execution ProcessID='772' ThreadID='5780'/><Channel>Security</Channel><Computer>dc-yourdc.ad.yourdc.org</Computer><Security/></System><EventData><Data Name='SubjectUserSid'>S-1-5-21-1234567890-1234567890-1234567890-12345</Data><Data Name='SubjectUserName'>youruser$</Data><Data Name='SubjectDomainName'>YOURDC</Data><Data Name='SubjectLogonId'>0x3e7</Data><Data Name='ObjectServer'>DS</Data><Data Name='ObjectType'>%{19195a5b-6da0-11d0-afd3-00c04fd930c9}</Data><Data Name='ObjectName'>%{9b026da6-0d3c-465c-8bee-5199d7165cba}</Data><Data Name='OperationType'>Object Access</Data><Data Name='HandleId'>0x0</Data><Data Name='AccessList'>%%7688</Data><Data Name='AccessMask'>0x100</Data><Data Name='Properties'>%%7688</Data><Data Name='AdditionalInfo'>-</Data><Data Name='AdditionalInfo2'></Data></EventData></Event>"
+      }
     }
   ]
 }
 ```
 
-### Set the `_dataId` Field
+### Test with a 4624 Logon Event
 
-In your Cribl pipeline, add an **Eval** function:
-
-```javascript
-_dataId = 'winlog'
-```
-
----
-
-## Testing
-
-### Test the Parser Directly
-
-```
+```json
 POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 {
   "docs": [
@@ -774,11 +749,11 @@ POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 }
 ```
 
-### Expected Output
+### Expected Output for 4624
 
 The simulated output should include:
 
-```
+```json
 {
   "@timestamp": "2025-12-04T10:00:00.123Z",
   "event": {
@@ -789,8 +764,7 @@ The simulated output should include:
     "type": ["start"],
     "kind": "event",
     "module": "windows",
-    "provider": "Microsoft-Windows-Security-Auditing",
-    "original": "<Event>...</Event>"
+    "provider": "Microsoft-Windows-Security-Auditing"
   },
   "winlog": {
     "channel": "Security",
@@ -834,29 +808,62 @@ The simulated output should include:
 }
 ```
 
-### Send Test Data via Cribl Path
+---
 
-```
-POST logs-cribl-default/_doc
+## Step 4: Configure Cribl
+
+### Destination Settings
+
+| Setting | Value |
+|---------|-------|
+| **Index or Data Stream** | `logs-cribl-default` |
+| **API Key** | Base64-encoded Elastic API key |
+
+### API Key Permissions
+
+```json
+POST /_security/api_key
 {
-  "@timestamp": "2025-12-04T10:00:00.000Z",
-  "_dataId": "winlog",
-  "message": "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Security-Auditing' Guid='{54849625-5478-4994-a5ba-3e3b0328c30d}'/><EventID>4624</EventID><Version>2</Version><Level>0</Level><Task>12544</Task><Opcode>0</Opcode><Keywords>0x8020000000000000</Keywords><TimeCreated SystemTime='2025-12-04T10:00:00.1234567Z'/><EventRecordID>123456789</EventRecordID><Correlation/><Execution ProcessID='888' ThreadID='999'/><Channel>Security</Channel><Computer>DC01.corp.example.com</Computer><Security/></System><EventData><Data Name='SubjectUserSid'>S-1-5-18</Data><Data Name='SubjectUserName'>DC01$</Data><Data Name='SubjectDomainName'>CORP</Data><Data Name='SubjectLogonId'>0x3e7</Data><Data Name='TargetUserSid'>S-1-5-21-1234567890-1234567890-1234567890-1001</Data><Data Name='TargetUserName'>admin</Data><Data Name='TargetDomainName'>CORP</Data><Data Name='TargetLogonId'>0x12345678</Data><Data Name='LogonType'>3</Data><Data Name='LogonProcessName'>NtLmSsp</Data><Data Name='AuthenticationPackageName'>NTLM</Data><Data Name='WorkstationName'>WORKSTATION01</Data><Data Name='LogonGuid'>{00000000-0000-0000-0000-000000000000}</Data><Data Name='TransmittedServices'>-</Data><Data Name='LmPackageName'>NTLM V2</Data><Data Name='KeyLength'>128</Data><Data Name='ProcessId'>0x0</Data><Data Name='ProcessName'>-</Data><Data Name='IpAddress'>192.168.1.100</Data><Data Name='IpPort'>49152</Data></EventData></Event>"
-}
-```
-
-### Verify Data in Correct Data Stream
-
-```
-GET logs-system.security-default/_search
-{
-  "size": 1,
-  "sort": [{"@timestamp": "desc"}],
-  "query": {
-    "term": { "event.code": "4624" }
+  "name": "cribl-winlog-ingestion",
+  "role_descriptors": {
+    "cribl_writer": {
+      "cluster": ["monitor"],
+      "indices": [
+        {
+          "names": ["logs-*"],
+          "privileges": ["auto_configure", "create_doc", "write", "view_index_metadata"]
+        }
+      ]
+    }
   }
 }
 ```
+
+### Set the `_dataId` Field in Cribl
+
+In your Cribl pipeline, add an **Eval** function:
+
+```javascript
+_dataId = 'winlog'
+```
+
+Also ensure `message` is a string:
+
+```javascript
+message = typeof message === 'object' ? JSON.stringify(message) : message
+```
+
+---
+
+## Step 5: Install Required Integration Assets
+
+For routing to work, install the integration assets in Kibana:
+
+1. Go to **Management → Integrations**
+2. Search for and install:
+   - **System** integration (for Security, Application, System logs)
+   - **Windows** integration (for Sysmon, PowerShell logs)
+3. For each, go to **Settings → Install assets**
 
 ---
 
@@ -870,6 +877,7 @@ GET logs-system.security-default/_search
 | 4625 | logon-failed | failure | authentication |
 | 4634 | logged-off | success | authentication |
 | 4648 | explicit-credential-logon | success | authentication |
+| 4662 | operation-performed-on-object | success | - |
 | 4672 | assigned-special-privileges | success | authentication |
 | 4688 | created-process | success | process |
 | 4689 | terminated-process | success | process |
@@ -882,16 +890,16 @@ GET logs-system.security-default/_search
 
 ### Sysmon Events
 
-| Event ID | event.action |
-|----------|--------------|
-| 1 | Process Create |
-| 3 | Network connection detected |
-| 5 | Process terminated |
-| 7 | Image loaded |
-| 10 | Process accessed |
-| 11 | File created |
-| 12-14 | Registry events |
-| 22 | DNS query |
+| Event ID | event.action | event.category |
+|----------|--------------|----------------|
+| 1 | Process Create | process |
+| 3 | Network connection detected | network |
+| 5 | Process terminated | process |
+| 7 | Image loaded | process |
+| 10 | Process accessed | process |
+| 11 | File created | file |
+| 12-14 | Registry events | registry |
+| 22 | DNS query | network |
 
 ### Logon Types
 
@@ -909,7 +917,7 @@ GET logs-system.security-default/_search
 
 ## Cleanup
 
-```
+```json
 DELETE _ingest/pipeline/cribl-winlog-xml-parser
 DELETE _ingest/pipeline/logs-cribl-default@custom
 ```
@@ -918,7 +926,7 @@ DELETE _ingest/pipeline/logs-cribl-default@custom
 
 ## Compatibility Notes
 
-This parser produces output that is compatible with:
+This parser produces output compatible with:
 
 - ✅ Elastic Security detection rules
 - ✅ Windows/System integration dashboards
@@ -926,8 +934,17 @@ This parser produces output that is compatible with:
 - ✅ `event.action`, `event.outcome` filtering
 - ✅ `related.user`, `related.ip` enrichment
 - ✅ `winlog.logon.type` human-readable values
+- ✅ All Elasticsearch license levels (no special plugins required)
 
-Some advanced features from Elastic Agent that require additional work:
-- ⚠️ Full `message` field recreation (Elastic Agent builds a human-readable message)
-- ⚠️ `ecs.version` field population
-- ⚠️ `agent.*` fields (would need to be faked or set via Cribl)
+## Processors Used
+
+This pipeline uses only standard processors available on all Elasticsearch clusters:
+
+| Processor | Purpose |
+|-----------|---------|
+| `set` | Copy and set field values |
+| `script` | Painless regex parsing and field mapping |
+| `date` | Parse timestamps |
+| `remove` | Clean up temporary fields |
+| `pipeline` | Call sub-pipelines |
+| `reroute` | Route to different data streams |
