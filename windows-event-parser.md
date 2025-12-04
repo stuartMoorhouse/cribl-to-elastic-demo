@@ -21,7 +21,7 @@ Run these commands in Kibana Dev Console in order.
 
 This pipeline uses Painless regex to parse Windows Event XML:
 
-```json
+```
 PUT _ingest/pipeline/cribl-winlog-xml-parser
 {
   "description": "Convert raw Windows Event XML to Elastic Agent format for Windows integration compatibility",
@@ -655,7 +655,7 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
 
 This routes incoming Cribl data through the parser and to the correct data streams:
 
-```json
+```
 PUT _ingest/pipeline/logs-cribl-default@custom
 {
   "description": "Parse and route Cribl data to appropriate data streams",
@@ -717,7 +717,7 @@ PUT _ingest/pipeline/logs-cribl-default@custom
 
 ### Test with Your Sample Event (4662)
 
-```json
+```
 POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 {
   "docs": [
@@ -734,7 +734,7 @@ POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 
 ### Test with a 4624 Logon Event
 
-```json
+```
 POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 {
   "docs": [
@@ -753,7 +753,7 @@ POST _ingest/pipeline/cribl-winlog-xml-parser/_simulate
 
 The simulated output should include:
 
-```json
+```
 {
   "@timestamp": "2025-12-04T10:00:00.123Z",
   "event": {
@@ -821,7 +821,7 @@ The simulated output should include:
 
 ### API Key Permissions
 
-```json
+```
 POST /_security/api_key
 {
   "name": "cribl-winlog-ingestion",
@@ -917,7 +917,7 @@ For routing to work, install the integration assets in Kibana:
 
 ## Cleanup
 
-```json
+```
 DELETE _ingest/pipeline/cribl-winlog-xml-parser
 DELETE _ingest/pipeline/logs-cribl-default@custom
 ```
