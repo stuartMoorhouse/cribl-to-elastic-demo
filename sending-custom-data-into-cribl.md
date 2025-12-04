@@ -46,8 +46,8 @@ This guide focuses on **Option 2**, which provides better visibility in the Crib
 
 Define how long data should be retained and when it should roll over.
 
+```
 PUT _ilm/policy/logs-test-policy
-```json
 {
   "policy": {
     "phases": {
@@ -75,8 +75,8 @@ PUT _ilm/policy/logs-test-policy
 
 This pipeline parses your custom data and maps it to ECS fields. Adjust the grok pattern to match your data format.
 
+```
 PUT _ingest/pipeline/logs-test-default
-```json
 {
   "description": "Parse and enrich custom data from Cribl",
   "processors": [
@@ -166,8 +166,8 @@ PUT _ingest/pipeline/logs-test-default
 ### Step 3: Create the Component Templates
 
 #### Mappings Template
+```
 PUT _component_template/logs-test-mappings
-```json
 {
   "template": {
     "mappings": {
@@ -221,8 +221,8 @@ PUT _component_template/logs-test-mappings
 ```
 
 #### Settings Template
+```
 PUT _component_template/logs-test-settings
-```json
 {
   "template": {
     "settings": {
@@ -240,8 +240,8 @@ PUT _component_template/logs-test-settings
 ```
 
 ### Step 4: Create the Index Template
+```
 PUT _index_template/logs-test-template
-```json
 {
   "index_patterns": ["logs-test-*"],
   "data_stream": {},
@@ -257,16 +257,16 @@ PUT _index_template/logs-test-template
 ```
 
 ### Step 5: Create the Data Stream
-
+```
 PUT _data_stream/logs-test-default
-
+```
 
 ### Step 6: Configure the Reroute Processor
 
 This is the key step that routes data from `logs-cribl-default` to your custom data stream based on the `_dataId` field.
 
+```
 PUT _ingest/pipeline/logs-cribl-default@custom
-```json
 {
   "description": "Route Cribl data to appropriate data streams based on _dataId",
   "processors": [
@@ -307,8 +307,8 @@ Alternatively, you can set this in the source configuration under **Fields**.
 ## Testing the Configuration
 
 ### Send a Test Document
+```
 POST logs-cribl-default/_doc
-```json
 {
   "@timestamp": "2025-01-15T10:00:00.000Z",
   "_dataId": "test",
@@ -327,7 +327,7 @@ GET logs-test-default/_search
 
 Expected result should show ECS-mapped fields:
 
-```json
+```
 {
   "_source": {
     "@timestamp": "2025-01-15T10:00:00.000Z",
@@ -372,8 +372,8 @@ To add another custom data source, repeat the process:
 4. Create the data stream `logs-myapp-default`
 5. Add another reroute condition to the `logs-cribl-default@custom` pipeline:
 
+```
 PUT _ingest/pipeline/logs-cribl-default@custom
-```json
 {
   "description": "Route Cribl data to appropriate data streams based on _dataId",
   "processors": [
@@ -399,7 +399,7 @@ PUT _ingest/pipeline/logs-cribl-default@custom
 
 If you need to remove the configuration:
 
-```json
+```
 DELETE _data_stream/logs-test-default
 DELETE _index_template/logs-test-template
 DELETE _component_template/logs-test-mappings
