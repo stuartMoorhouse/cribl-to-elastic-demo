@@ -46,8 +46,8 @@ This guide focuses on **Option 2**, which provides better visibility in the Crib
 
 Define how long data should be retained and when it should roll over.
 
-```json
 PUT _ilm/policy/logs-test-policy
+```json
 {
   "policy": {
     "phases": {
@@ -75,8 +75,8 @@ PUT _ilm/policy/logs-test-policy
 
 This pipeline parses your custom data and maps it to ECS fields. Adjust the grok pattern to match your data format.
 
-```json
 PUT _ingest/pipeline/logs-test-default
+```json
 {
   "description": "Parse and enrich custom data from Cribl",
   "processors": [
@@ -166,9 +166,8 @@ PUT _ingest/pipeline/logs-test-default
 ### Step 3: Create the Component Templates
 
 #### Mappings Template
-
-```json
 PUT _component_template/logs-test-mappings
+```json
 {
   "template": {
     "mappings": {
@@ -222,9 +221,8 @@ PUT _component_template/logs-test-mappings
 ```
 
 #### Settings Template
-
-```json
 PUT _component_template/logs-test-settings
+```json
 {
   "template": {
     "settings": {
@@ -242,9 +240,8 @@ PUT _component_template/logs-test-settings
 ```
 
 ### Step 4: Create the Index Template
-
-```json
 PUT _index_template/logs-test-template
+```json
 {
   "index_patterns": ["logs-test-*"],
   "data_stream": {},
@@ -261,16 +258,15 @@ PUT _index_template/logs-test-template
 
 ### Step 5: Create the Data Stream
 
-```json
 PUT _data_stream/logs-test-default
-```
+
 
 ### Step 6: Configure the Reroute Processor
 
 This is the key step that routes data from `logs-cribl-default` to your custom data stream based on the `_dataId` field.
 
-```json
 PUT _ingest/pipeline/logs-cribl-default@custom
+```json
 {
   "description": "Route Cribl data to appropriate data streams based on _dataId",
   "processors": [
@@ -311,9 +307,8 @@ Alternatively, you can set this in the source configuration under **Fields**.
 ## Testing the Configuration
 
 ### Send a Test Document
-
-```json
 POST logs-cribl-default/_doc
+```json
 {
   "@timestamp": "2025-01-15T10:00:00.000Z",
   "_dataId": "test",
@@ -322,9 +317,8 @@ POST logs-cribl-default/_doc
 ```
 
 ### Verify the Document Was Routed and Parsed
-
-```json
 GET logs-test-default/_search
+```json
 {
   "size": 10,
   "sort": [{ "@timestamp": "desc" }]
@@ -378,8 +372,8 @@ To add another custom data source, repeat the process:
 4. Create the data stream `logs-myapp-default`
 5. Add another reroute condition to the `logs-cribl-default@custom` pipeline:
 
-```json
 PUT _ingest/pipeline/logs-cribl-default@custom
+```json
 {
   "description": "Route Cribl data to appropriate data streams based on _dataId",
   "processors": [
@@ -428,8 +422,8 @@ DELETE _ilm/policy/logs-test-policy
 1. Test your grok pattern using Kibana's Grok Debugger (**Dev Tools → Grok Debugger**)
 2. Check the ingest pipeline simulate API:
 
-```json
 POST _ingest/pipeline/logs-test-default/_simulate
+```json
 {
   "docs": [
     {
