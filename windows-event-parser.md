@@ -2,14 +2,7 @@
 
 This ingest pipeline converts raw Windows Event XML (as received from Cribl) into the format that Elastic Agent produces, enabling full compatibility with the Windows/System integration's enrichment pipelines and Elastic Security detection rules.
 
-## Overview
-
-When Elastic Agent collects Windows events, it:
-1. Reads from the Windows Event Log API
-2. Parses the XML into structured JSON fields (`winlog.*`)
-3. Maps common fields to ECS (`user.*`, `source.*`, `process.*`, etc.)
-
-This pipeline replicates that process for raw XML data arriving via Cribl using **only processors available on all Elasticsearch licenses** (script, set, date, remove).
+---
 
 ## Installation
 
@@ -48,9 +41,6 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
           ctx.winlog = [:];
           ctx.winlog.api = 'wineventlog';
           
-          // Helper function to extract XML attribute or element
-          // Pattern: Name='value' or <n>value</n>
-          
           // Provider Name
           def providerMatch = /Provider Name='([^']*)'/.matcher(xml);
           if (providerMatch.find()) {
@@ -64,15 +54,16 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
           }
           
           // EventID - handle both <EventID>123</EventID> and <EventID Qualifiers='0'>123</EventID>
+          // Store as INTEGER to match Elastic Agent format
           def eventIdMatch = /<EventID[^>]*>(\d+)<\/EventID>/.matcher(xml);
           if (eventIdMatch.find()) {
-            ctx.winlog.event_id = eventIdMatch.group(1);
+            ctx.winlog.event_id = Integer.parseInt(eventIdMatch.group(1));
           }
           
-          // Version
+          // Version - store as integer
           def versionMatch = /<Version>(\d+)<\/Version>/.matcher(xml);
           if (versionMatch.find()) {
-            ctx.winlog.version = versionMatch.group(1);
+            ctx.winlog.version = Integer.parseInt(versionMatch.group(1));
           }
           
           // Level
@@ -95,10 +86,18 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
             ctx.winlog.opcode = opcodeMatch.group(1);
           }
           
-          // Keywords
+          // Keywords - map to human-readable values like Elastic Agent
           def keywordsMatch = /<Keywords>([^<]+)<\/Keywords>/.matcher(xml);
           if (keywordsMatch.find()) {
-            ctx.winlog.keywords = [keywordsMatch.group(1)];
+            def kw = keywordsMatch.group(1);
+            // Map common keyword hex values to human-readable strings
+            if (kw.contains('0x8020000000000000')) {
+              ctx.winlog.keywords = ['Audit Success'];
+            } else if (kw.contains('0x8010000000000000')) {
+              ctx.winlog.keywords = ['Audit Failure'];
+            } else {
+              ctx.winlog.keywords = [kw];
+            }
           }
           
           // TimeCreated
@@ -107,10 +106,10 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
             ctx.winlog.time_created = timeMatch.group(1);
           }
           
-          // EventRecordID
+          // EventRecordID - store as LONG integer to match Elastic Agent format
           def recordMatch = /<EventRecordID>(\d+)<\/EventRecordID>/.matcher(xml);
           if (recordMatch.find()) {
-            ctx.winlog.record_id = recordMatch.group(1);
+            ctx.winlog.record_id = Long.parseLong(recordMatch.group(1));
           }
           
           // Correlation ActivityID
@@ -225,9 +224,9 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
     },
     {
       "set": {
-        "description": "Set event.code",
+        "description": "Set event.code as integer",
         "field": "event.code",
-        "value": "{{{winlog.event_id}}}",
+        "copy_from": "winlog.event_id",
         "if": "ctx.winlog?.event_id != null"
       }
     },
@@ -381,63 +380,63 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
           
           // Security channel events
           if (channel == 'Security') {
-            // Event action mappings
+            // Event action mappings - matching Elastic Agent's task-based naming
             def actionMap = [
-              '4624': 'logged-in',
-              '4625': 'logon-failed',
-              '4634': 'logged-off',
-              '4647': 'logged-off',
-              '4648': 'explicit-credential-logon',
-              '4672': 'assigned-special-privileges',
-              '4768': 'kerberos-authentication-ticket-requested',
-              '4769': 'kerberos-service-ticket-requested',
-              '4770': 'kerberos-service-ticket-renewed',
-              '4771': 'kerberos-preauth-failed',
-              '4776': 'credential-validated',
-              '4720': 'created-user-account',
-              '4722': 'enabled-user-account',
-              '4723': 'change-password-attempt',
-              '4724': 'reset-password-attempt',
-              '4725': 'disabled-user-account',
-              '4726': 'deleted-user-account',
-              '4727': 'created-security-group',
-              '4728': 'added-member-to-security-group',
-              '4729': 'removed-member-from-security-group',
-              '4730': 'deleted-security-group',
-              '4731': 'created-security-group',
-              '4732': 'added-member-to-security-group',
-              '4733': 'removed-member-from-security-group',
-              '4734': 'deleted-security-group',
-              '4735': 'modified-security-group',
-              '4737': 'modified-security-group',
-              '4738': 'modified-user-account',
-              '4740': 'locked-out-user-account',
-              '4741': 'created-computer-account',
-              '4742': 'modified-computer-account',
-              '4743': 'deleted-computer-account',
-              '4754': 'created-security-group',
-              '4755': 'modified-security-group',
-              '4756': 'added-member-to-security-group',
-              '4757': 'removed-member-from-security-group',
-              '4758': 'deleted-security-group',
-              '4688': 'created-process',
-              '4689': 'terminated-process',
-              '4656': 'requested-handle-to-object',
-              '4658': 'closed-handle-to-object',
-              '4660': 'deleted-object',
-              '4661': 'requested-handle-to-object',
-              '4662': 'operation-performed-on-object',
-              '4663': 'attempted-to-access-object',
-              '4670': 'changed-permissions-on-object',
-              '4719': 'changed-audit-policy',
-              '4739': 'changed-domain-policy',
-              '4817': 'changed-auditing-settings',
-              '4697': 'service-installed',
-              '4698': 'scheduled-task-created',
-              '4699': 'scheduled-task-deleted',
-              '4700': 'scheduled-task-enabled',
-              '4701': 'scheduled-task-disabled',
-              '4702': 'scheduled-task-updated'
+              '4624': 'Logon',
+              '4625': 'Logon',
+              '4634': 'Logoff',
+              '4647': 'Logoff',
+              '4648': 'Logon',
+              '4672': 'Special Logon',
+              '4768': 'Kerberos Authentication Service',
+              '4769': 'Kerberos Service Ticket Operations',
+              '4770': 'Kerberos Service Ticket Operations',
+              '4771': 'Kerberos Authentication Service',
+              '4776': 'Credential Validation',
+              '4720': 'User Account Management',
+              '4722': 'User Account Management',
+              '4723': 'User Account Management',
+              '4724': 'User Account Management',
+              '4725': 'User Account Management',
+              '4726': 'User Account Management',
+              '4727': 'Security Group Management',
+              '4728': 'Security Group Management',
+              '4729': 'Security Group Management',
+              '4730': 'Security Group Management',
+              '4731': 'Security Group Management',
+              '4732': 'Security Group Management',
+              '4733': 'Security Group Management',
+              '4734': 'Security Group Management',
+              '4735': 'Security Group Management',
+              '4737': 'Security Group Management',
+              '4738': 'User Account Management',
+              '4740': 'User Account Management',
+              '4741': 'Computer Account Management',
+              '4742': 'Computer Account Management',
+              '4743': 'Computer Account Management',
+              '4754': 'Security Group Management',
+              '4755': 'Security Group Management',
+              '4756': 'Security Group Management',
+              '4757': 'Security Group Management',
+              '4758': 'Security Group Management',
+              '4688': 'Process Creation',
+              '4689': 'Process Termination',
+              '4656': 'File System',
+              '4658': 'File System',
+              '4660': 'File System',
+              '4661': 'SAM',
+              '4662': 'Directory Service Access',
+              '4663': 'File System',
+              '4670': 'File System',
+              '4719': 'Audit Policy Change',
+              '4739': 'Domain Policy Change',
+              '4817': 'Audit Policy Change',
+              '4697': 'Security System Extension',
+              '4698': 'Other Object Access Events',
+              '4699': 'Other Object Access Events',
+              '4700': 'Other Object Access Events',
+              '4701': 'Other Object Access Events',
+              '4702': 'Other Object Access Events'
             ];
             
             if (actionMap.containsKey(eventId)) {
@@ -651,12 +650,14 @@ PUT _ingest/pipeline/cribl-winlog-xml-parser
 
 ---
 
-## Step 2: Create the Cribl Routing Pipeline
+## Step 2: Create the Cribl Custom Pipeline
 
-This routes incoming Cribl data through the parser and to the correct data streams:
+This routes incoming Cribl data through the parser and to the correct data streams.
+
+**Important:** The pipeline must be named `logs-cribl@custom` (not `logs-cribl-default@custom`) to be called by the Cribl integration.
 
 ```
-PUT _ingest/pipeline/logs-cribl-default@custom
+PUT _ingest/pipeline/logs-cribl@custom
 {
   "description": "Parse and route Cribl data to appropriate data streams",
   "processors": [
@@ -757,8 +758,8 @@ The simulated output should include:
 {
   "@timestamp": "2025-12-04T10:00:00.123Z",
   "event": {
-    "code": "4624",
-    "action": "logged-in",
+    "code": 4624,
+    "action": "Logon",
     "outcome": "success",
     "category": ["authentication"],
     "type": ["start"],
@@ -768,10 +769,12 @@ The simulated output should include:
   },
   "winlog": {
     "channel": "Security",
-    "event_id": "4624",
+    "event_id": 4624,
     "provider_name": "Microsoft-Windows-Security-Auditing",
     "computer_name": "DC01.corp.example.com",
-    "record_id": "123456789",
+    "record_id": 123456789,
+    "keywords": ["Audit Success"],
+    "version": 2,
     "process": {
       "pid": 888,
       "thread": { "id": 999 }
@@ -873,20 +876,20 @@ For routing to work, install the integration assets in Kibana:
 
 | Event ID | event.action | event.outcome | event.category |
 |----------|--------------|---------------|----------------|
-| 4624 | logged-in | success | authentication |
-| 4625 | logon-failed | failure | authentication |
-| 4634 | logged-off | success | authentication |
-| 4648 | explicit-credential-logon | success | authentication |
-| 4662 | operation-performed-on-object | success | - |
-| 4672 | assigned-special-privileges | success | authentication |
-| 4688 | created-process | success | process |
-| 4689 | terminated-process | success | process |
-| 4720 | created-user-account | success | iam |
-| 4726 | deleted-user-account | success | iam |
-| 4728 | added-member-to-security-group | success | iam |
-| 4768 | kerberos-authentication-ticket-requested | success | authentication |
-| 4769 | kerberos-service-ticket-requested | success | authentication |
-| 4771 | kerberos-preauth-failed | failure | authentication |
+| 4624 | Logon | success | authentication |
+| 4625 | Logon | failure | authentication |
+| 4634 | Logoff | success | authentication |
+| 4648 | Logon | success | authentication |
+| 4662 | Directory Service Access | success | - |
+| 4672 | Special Logon | success | authentication |
+| 4688 | Process Creation | success | process |
+| 4689 | Process Termination | success | process |
+| 4720 | User Account Management | success | iam |
+| 4726 | User Account Management | success | iam |
+| 4728 | Security Group Management | success | iam |
+| 4768 | Kerberos Authentication Service | success | authentication |
+| 4769 | Kerberos Service Ticket Operations | success | authentication |
+| 4771 | Kerberos Authentication Service | failure | authentication |
 
 ### Sysmon Events
 
@@ -919,7 +922,7 @@ For routing to work, install the integration assets in Kibana:
 
 ```
 DELETE _ingest/pipeline/cribl-winlog-xml-parser
-DELETE _ingest/pipeline/logs-cribl-default@custom
+DELETE _ingest/pipeline/logs-cribl@custom
 ```
 
 ---
