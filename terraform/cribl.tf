@@ -32,6 +32,11 @@ resource "aws_instance" "cribl" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.cribl.id]
 
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
   root_block_device {
     volume_size = 20
     volume_type = "gp3"

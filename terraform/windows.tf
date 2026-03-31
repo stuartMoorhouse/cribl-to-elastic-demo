@@ -49,6 +49,11 @@ resource "aws_instance" "windows" {
   vpc_security_group_ids = [aws_security_group.windows.id]
   get_password_data      = true
 
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
   root_block_device {
     volume_size = 30
     volume_type = "gp3"
